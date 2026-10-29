@@ -429,23 +429,36 @@ function setToken() {
 
 // ========== 工具函数 ==========
 function loadData() {
-  // 公开仓库读取不需要 token
-  const readUrl = ghApiUrl();
-  const headers = { 'Accept': 'application/vnd.github.v3+json' };
   const token = getGHToken();
-  if (token) headers['Authorization'] = `token ${token}`;
-  return fetch(readUrl, { headers })
-    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then(data => {
-      ghSha = data.sha;
-      if (data.content) {
-        const decoded = atob(data.content.replace(/\n/g, ''));
-        financeData = JSON.parse(decoded);
-      }
+  // 有 Token 时用 API（可读可写，拿到 SHA 供保存用）
+  if (token) {
+    return fetch(ghApiUrl(), {
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    })
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(data => {
+        ghSha = data.sha;
+        if (data.content) {
+          const decoded = atob(data.content.replace(/\n/g, ''));
+          financeData = JSON.parse(decoded);
+        }
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(financeData)); } catch(e) {}
+      })
+      .catch(() => fallbackLoadData());
+  }
+  // 无 Token 时用 raw.githubusercontent.com（不走 API 限流，公开仓库直接读）
+  return fallbackLoadData();
+}
+
+function fallbackLoadData() {
+  const rawUrl = `https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/main/${GH_FILE}`;
+  return fetch(rawUrl)
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then(text => {
+      financeData = JSON.parse(text);
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(financeData)); } catch(e) {}
     })
     .catch(() => {
-      // 网络失败时用本地缓存
       try { const raw = localStorage.getItem(STORAGE_KEY); if (raw) financeData = JSON.parse(raw); } catch(e) { financeData = {}; }
     });
 }
