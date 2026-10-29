@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, user-scalable=0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>个人收支工作台</title>
 <style>
   :root {
@@ -426,7 +429,12 @@ function setToken() {
 
 // ========== 工具函数 ==========
 function loadData() {
-  return fetch(ghApiUrl())
+  // 公开仓库读取不需要 token
+  const readUrl = ghApiUrl();
+  const headers = { 'Accept': 'application/vnd.github.v3+json' };
+  const token = getGHToken();
+  if (token) headers['Authorization'] = `token ${token}`;
+  return fetch(readUrl, { headers })
     .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(data => {
       ghSha = data.sha;
@@ -437,23 +445,49 @@ function loadData() {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(financeData)); } catch(e) {}
     })
     .catch(() => {
+      // 网络失败时用本地缓存
       try { const raw = localStorage.getItem(STORAGE_KEY); if (raw) financeData = JSON.parse(raw); } catch(e) { financeData = {}; }
     });
+}
+
+function showToast(msg, type) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = `position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+    background:${type==='error'?'#e74c3c':type==='warn'?'#f39c12':'#00b578'};
+    color:#fff;padding:10px 24px;border-radius:20px;font-size:14px;z-index:9999;
+    box-shadow:0 4px 12px rgba(0,0,0,0.2);opacity:0;transition:opacity 0.3s;`;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; });
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2500);
 }
 
 function saveData() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(financeData)); } catch(e) {}
   const token = getGHToken();
-  if (!token) { return Promise.resolve(); }
+  if (!token) {
+    showToast('未设置Token，数据仅保存在本地', 'warn');
+    return Promise.resolve();
+  }
   const content = btoa(unescape(encodeURIComponent(JSON.stringify(financeData))));
   return fetch(ghApiUrl(), {
     method: 'PUT',
     headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ message: 'Update finance data', content: content, sha: ghSha || undefined })
   })
-    .then(r => r.json())
-    .then(data => { if (data.content) ghSha = data.content.sha; })
-    .catch(() => {});
+    .then(r => {
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.json();
+    })
+    .then(data => {
+      if (data.content) ghSha = data.content.sha;
+      showToast('已同步', 'success');
+    })
+    .catch(err => {
+      showToast('同步失败: ' + err.message, 'error');
+      // 同步失败时重新拉取最新 SHA，下次保存可重试
+      loadData();
+    });
 }
 
 function dateKey(y, m, d) {
@@ -714,20 +748,15 @@ function render() {
 
 // ========== 初始化 ==========
 loadData().then(() => {
-  // 如果服务端无数据，写入示例数据
-  if (Object.keys(financeData).length === 0) {
-    const y = 2026, m = 9;
-    financeData[dateKey(y,m,1)]  = { income: [{id:'1',amount:12000,note:'工资'}], expense: [{id:'2',amount:35,note:'午餐'}] };
-    financeData[dateKey(y,m,2)]  = { income: [], expense: [{id:'3',amount:58,note:'打车'}] };
-    financeData[dateKey(y,m,3)]  = { income: [], expense: [{id:'4',amount:120,note:'聚餐'}] };
-    financeData[dateKey(y,m,5)]  = { income: [{id:'5',amount:3000,note:'奖金'},{id:'6',amount:500,note:'红包'}], expense: [{id:'7',amount:45,note:'咖啡'}] };
-    financeData[dateKey(y,m,8)]  = { income: [], expense: [{id:'8',amount:280,note:'购物'}] };
-    financeData[dateKey(y,m,10)] = { income: [{id:'9',amount:500,note:'副业'}], expense: [{id:'10',amount:67,note:'晚餐'}] };
-    financeData[dateKey(y,m,12)] = { income: [], expense: [{id:'11',amount:890,note:'房租'}] };
-    financeData[dateKey(y,m,13)] = { income: [{id:'12',amount:2000,note:'报销'}], expense: [{id:'13',amount:35,note:'零食'}] };
-    saveData();
-  }
+  // 不再自动写入示例数据，避免覆盖云端真实数据
   render();
+});
+
+// 页面从后台恢复时重新拉取数据
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    loadData().then(() => render());
+  }
 });
 
 // Desktop only: show settings button
