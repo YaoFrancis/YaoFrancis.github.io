@@ -483,7 +483,8 @@ function saveData() {
     return Promise.resolve();
   }
   const content = btoa(unescape(encodeURIComponent(JSON.stringify(financeData))));
-  return fetch(ghApiUrl(), {
+  // 如果没有 SHA（通过 raw URL 加载的情况），先获取 SHA 再保存
+  const doPut = () => fetch(ghApiUrl(), {
     method: 'PUT',
     headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
     body: JSON.stringify({ message: 'Update finance data', content: content, sha: ghSha || undefined })
@@ -498,9 +499,17 @@ function saveData() {
     })
     .catch(err => {
       showToast('同步失败: ' + err.message, 'error');
-      // 同步失败时重新拉取最新 SHA，下次保存可重试
       loadData();
     });
+  if (!ghSha) {
+    // 先获取 SHA
+    return fetch(ghApiUrl(), { headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' } })
+      .then(r => r.json())
+      .then(data => { ghSha = data.sha; })
+      .catch(() => {})
+      .then(doPut);
+  }
+  return doPut();
 }
 
 function dateKey(y, m, d) {
